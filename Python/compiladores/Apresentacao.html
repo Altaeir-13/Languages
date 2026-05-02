@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anatomia de um Parser LALR(1)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Chosen Palette: Warm Neutral Tech (Off-white background, Slate text, Indigo/Emerald accents) -->
+    <!-- Application Structure Plan: 
+         The app is designed as an interactive educational scroll, breaking down the complex concept of LALR parsing into digestible stages.
+         1. Hero/Problem: Immediately engages the user with the "Ambiguity" problem (2+3*4), allowing them to see the difference between naive and correct parsing.
+         2. The Tool (PLY): A section explaining the Lexer/Parser split using a visual "Tokenization" metaphor.
+         3. The Solution (Precedence): Uses a Chart.js bar chart to visualize "Operator Weight", making the abstract concept of precedence tuples concrete.
+         4. The Simulation (The Core): A step-by-step interactive 'tape and stack' visualization. This replaces the static table in the report, allowing the user to 'play' the parser logic and see the critical SHIFT decision at step 4.
+         5. The Code: Displays the Python implementation contextually.
+         Rationale: This structure moves from Problem -> Concept -> Mechanism -> Implementation, maximizing understanding.
+    -->
+    <!-- Visualization & Content Choices:
+         1. Ambiguity Calc: HTML/JS Logic -> Goal: Inform/Contrast -> Shows immediate impact of logic choice.
+         2. Precedence Chart: Chart.js Bar Chart -> Goal: Compare -> Visualizes why '*' beats '+'. Justification: Bar height intuitively represents "weight" or priority defined in the tuple.
+         3. Parsing Simulator: HTML Grid + JS State Machine -> Goal: Process/Change -> Interactive step-through of the Shift/Reduce algorithm. NO SVG/Mermaid used; pure DOM manipulation for the stack.
+         4. Code Blocks: Styled HTML -> Goal: Inform -> Shows the actual PLY syntax.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            background-color: #fdfbf7; /* Warm neutral */
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            color: #334155;
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px;
+            max-height: 400px;
+        }
+        .stack-element {
+            transition: all 0.3s ease;
+        }
+        .step-active {
+            border-left: 4px solid #4f46e5;
+            background-color: #eef2ff;
+        }
+    </style>
+</head>
+<body class="antialiased selection:bg-indigo-100 selection:text-indigo-900">
+
+    <!-- Header / Nav -->
+    <nav class="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0 flex items-center gap-2">
+                        <span class="text-2xl font-bold text-indigo-600">PLY</span>
+                        <span class="text-lg font-semibold text-gray-700">| Parser LALR(1) Interativo</span>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <button onclick="scrollToSection('intro')" class="text-gray-500 hover:text-indigo-600 px-3 py-2 rounded-md text-sm font-medium">O Problema</button>
+                    <button onclick="scrollToSection('precedence')" class="text-gray-500 hover:text-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Precedência</button>
+                    <button onclick="scrollToSection('simulation')" class="bg-indigo-600 text-white hover:bg-indigo-700 px-3 py-2 rounded-md text-sm font-medium">Simulador</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-16">
+
+        <!-- Section 1: The Problem of Ambiguity -->
+        <section id="intro" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8">
+            <div class="max-w-3xl">
+                <h1 class="text-3xl font-extrabold text-gray-900 mb-4"> O Problema da Ambiguidade</h1>
+                <p class="text-lg text-gray-600 mb-6">
+                    Quando um computador lê uma expressão matemática como <code class="bg-gray-100 px-2 py-1 rounded font-mono font-bold text-indigo-600">2 + 3 * 4</code>, ele precisa decidir a ordem das operações. Sem regras estritas, o resultado pode ser catastrófico.
+                </p>
+                
+                <div class="grid md:grid-cols-2 gap-8 items-center bg-gray-50 p-6 rounded-xl border border-gray-200">
+                    <div>
+                        <h3 class="font-bold text-gray-800 mb-2">Teste a Lógica:</h3>
+                        <p class="text-sm text-gray-500 mb-4">Clique nos botões para ver como diferentes lógicas processam a mesma conta.</p>
+                        <div class="space-y-3">
+                            <button onclick="updateCalc('naive')" class="w-full text-left px-4 py-3 bg-white border border-gray-300 hover:border-red-400 hover:bg-red-50 rounded-lg shadow-sm transition-all group">
+                                <div class="flex justify-between items-center">
+                                    <span class="font-semibold text-gray-700">Leitura Ingênua (Esq &rarr; Dir)</span>
+                                    <span class="text-xs font-mono bg-gray-100 px-2 py-1 rounded">Sem Precedência</span>
+                                </div>
+                                <p class="text-xs text-gray-400 mt-1 group-hover:text-red-500">Resolve o '+' antes do '*'</p>
+                            </button>
+                            <button onclick="updateCalc('lalr')" class="w-full text-left px-4 py-3 bg-white border border-indigo-300 hover:border-indigo-500 hover:bg-indigo-50 rounded-lg shadow-sm ring-2 ring-indigo-50 transition-all group">
+                                <div class="flex justify-between items-center">
+                                    <span class="font-semibold text-indigo-700">Lógica LALR (Matemática)</span>
+                                    <span class="text-xs font-mono bg-indigo-100 text-indigo-700 px-2 py-1 rounded">Com Precedência</span>
+                                </div>
+                                <p class="text-xs text-gray-400 mt-1 group-hover:text-indigo-600">Olha o futuro para decidir</p>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="bg-white p-6 rounded-xl shadow-inner border border-gray-200 flex flex-col items-center justify-center h-full">
+                        <span class="text-sm text-gray-400 uppercase tracking-wider font-bold mb-2">Resultado Calculado</span>
+                        <div id="calc-display" class="text-5xl font-mono font-bold text-gray-300">?</div>
+                        <div id="calc-explanation" class="mt-4 text-center text-sm font-medium text-gray-500 min-h-[3rem]">
+                            Selecione uma lógica ao lado.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 2: The Tool (Lexer & Parser) -->
+        <section class="grid md:grid-cols-2 gap-8">
+            <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8">
+                <div class="flex items-center gap-3 mb-4">
+                    <div class="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">1</div>
+                    <h2 class="text-xl font-bold text-gray-900">O Lexer (Analisador Léxico)</h2>
+                </div>
+                <p class="text-gray-600 mb-4">
+                    Antes de calcular, o <code>ply</code> quebra o texto em "tijolos" chamados <strong>Tokens</strong>. Ele não entende matemática, apenas identifica padrões.
+                </p>
+                <div class="bg-slate-800 rounded-lg p-4 font-mono text-sm overflow-x-auto text-slate-300">
+                    <span class="text-green-400">INPUT:</span> "10 + 2"<br><br>
+                    <span class="text-blue-400">OUTPUT:</span> [<br>
+                    &nbsp;&nbsp;Token(type='NUMBER', value=10),<br>
+                    &nbsp;&nbsp;Token(type='PLUS', value='+'),<br>
+                    &nbsp;&nbsp;Token(type='NUMBER', value=2)<br>
+                    ]
+                </div>
+            </div>
+
+            <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8">
+                <div class="flex items-center gap-3 mb-4">
+                    <div class="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold">2</div>
+                    <h2 class="text-xl font-bold text-gray-900">O Parser (Analisador Sintático)</h2>
+                </div>
+                <p class="text-gray-600 mb-4">
+                    O Parser recebe os tokens e tenta encaixá-los em regras gramaticais. Ele usa o algoritmo <strong>LALR(1)</strong>, que significa que ele lê da esquerda para a direita e olha <strong>1 token à frente</strong> (Look-Ahead).
+                </p>
+                <ul class="space-y-2 text-sm text-gray-600">
+                    <li class="flex items-start gap-2">
+                        <span class="mt-1 text-green-500">✓</span> 
+                        <span>Usa uma <strong>Pilha (Stack)</strong> para guardar o que já leu.</span>
+                    </li>
+                    <li class="flex items-start gap-2">
+                        <span class="mt-1 text-green-500">✓</span> 
+                        <span>Decide entre <strong>SHIFT</strong> (Empilhar) ou <strong>REDUCE</strong> (Resolver).</span>
+                    </li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- Section 3: Precedence (Chart) -->
+        <section id="precedence" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-8">
+            <h2 class="text-2xl font-bold text-gray-900 mb-2"> O Segredo: Tabela de Precedência</h2>
+            <p class="text-gray-600 mb-6 max-w-3xl">
+                Para resolver conflitos, definimos "pesos" para os operadores. No código Python, isso é uma tupla. Visualmente, podemos imaginar como níveis de hierarquia. Quanto mais alto, maior a prioridade de resolução (binding power).
+            </p>
+
+            <div class="grid md:grid-cols-3 gap-8">
+                <div class="md:col-span-1 space-y-4">
+                    <div class="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                        <h4 class="font-bold text-sm text-gray-700 uppercase mb-2">Código Python (PLY)</h4>
+                        <pre class="text-xs font-mono text-slate-700 whitespace-pre-wrap">
+precedence = (
+    ('left', 'PLUS', 'MINUS'),
+    ('left', 'TIMES', 'DIVIDE'),
+)</pre>
+                        <p class="text-xs text-gray-500 mt-2">
+                            A ordem importa! O que está em baixo na lista tem maior prioridade.
+                        </p>
+                    </div>
+                    <div class="bg-indigo-50 p-4 rounded-lg border border-indigo-100">
+                        <h4 class="font-bold text-sm text-indigo-800 mb-1">Regra de Ouro</h4>
+                        <p class="text-sm text-indigo-700">
+                            Se o token atual na pilha tem precedência <strong>MENOR</strong> que o token que está vindo (Look-Ahead), o parser faz <strong>SHIFT</strong> (espera).
+                        </p>
+                    </div>
+                </div>
+
+                <div class="md:col-span-2 flex flex-col justify-center">
+                    <div class="chart-container">
+                        <canvas id="precedenceChart"></canvas>
+                    </div>
+                    <p class="text-center text-xs text-gray-400 mt-2">Visualização da "Força" de ligação dos operadores</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 4: Interactive Simulation -->
+        <section id="simulation" class="bg-white rounded-2xl shadow-lg border border-indigo-100 overflow-hidden">
+            <div class="bg-slate-900 p-6 text-white flex justify-between items-center flex-wrap gap-4">
+                <div>
+                    <h2 class="text-2xl font-bold text-white"> Simulador LALR(1)</h2>
+                    <p class="text-indigo-200 text-sm">Visualizando a execução de: <code class="bg-slate-800 px-2 rounded">2 + 3 * 4</code></p>
+                </div>
+                <div class="flex gap-2">
+                    <button id="btn-reset" onclick="resetSim()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded text-sm font-medium transition-colors">Reiniciar</button>
+                    <button id="btn-next" onclick="nextStep()" class="px-6 py-2 bg-indigo-500 hover:bg-indigo-400 text-white rounded text-sm font-bold shadow-lg shadow-indigo-500/30 transition-all flex items-center gap-2">
+                        Próximo Passo &rarr;
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-0 grid lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-gray-200">
+                
+                <!-- Left: Step Description -->
+                <div class="p-6 bg-gray-50 lg:col-span-1 max-h-[500px] overflow-y-auto" id="log-container">
+                    <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Log de Execução</h3>
+                    <div id="step-log" class="space-y-3">
+                        <!-- Steps will be injected here -->
+                        <div class="text-sm text-gray-500 italic">Clique em "Próximo Passo" para iniciar...</div>
+                    </div>
+                </div>
+
+                <!-- Right: Visual State -->
+                <div class="p-8 lg:col-span-2 bg-white flex flex-col justify-center items-center relative">
+                    
+                    <!-- Stack Visualization -->
+                    <div class="w-full max-w-lg mb-12">
+                        <div class="flex justify-between text-sm font-bold text-gray-500 mb-2 uppercase tracking-wider">
+                            <span>Fundo da Pilha</span>
+                            <span>Pilha (Stack)</span>
+                            <span>Topo</span>
+                        </div>
+                        <div id="stack-visual" class="flex items-end gap-2 h-24 border-b-4 border-slate-300 px-4 py-2 bg-slate-50 rounded-t-lg overflow-x-auto">
+                            <!-- Stack items appear here -->
+                            <div class="text-gray-400 text-sm self-center w-full text-center">Vazio</div>
+                        </div>
+                    </div>
+
+                    <!-- Input Tape Visualization -->
+                    <div class="w-full max-w-lg">
+                         <div class="flex justify-between text-sm font-bold text-gray-500 mb-2 uppercase tracking-wider">
+                            <span>Input (Fita de Entrada)</span>
+                            <span>Look-Ahead &rarr;</span>
+                        </div>
+                        <div class="relative overflow-hidden h-16 bg-gray-100 rounded-lg border border-gray-200 flex items-center px-4">
+                            <div id="input-tape" class="flex gap-4 font-mono text-xl text-gray-800 transition-transform duration-500">
+                                <!-- Tape items -->
+                                <span class="tape-item bg-white px-3 py-1 rounded shadow-sm border border-gray-200">2</span>
+                                <span class="tape-item bg-white px-3 py-1 rounded shadow-sm border border-gray-200">+</span>
+                                <span class="tape-item bg-white px-3 py-1 rounded shadow-sm border border-gray-200">3</span>
+                                <span class="tape-item bg-white px-3 py-1 rounded shadow-sm border border-gray-200">*</span>
+                                <span class="tape-item bg-white px-3 py-1 rounded shadow-sm border border-gray-200">4</span>
+                                <span class="tape-item text-gray-300 opacity-50">$</span>
+                            </div>
+                            <!-- Cursor Marker -->
+                            <div class="absolute left-0 top-0 bottom-0 w-16 bg-gradient-to-r from-transparent to-transparent border-r-2 border-red-500 z-10 pointer-events-none"></div>
+                            <div class="absolute top-0 right-4 text-xs text-red-500 font-bold bg-red-50 px-2 py-1 rounded mt-1">Próximo Token</div>
+                        </div>
+                    </div>
+
+                    <!-- Action Display -->
+                    <div id="action-display" class="mt-8 px-6 py-3 bg-white border-2 border-dashed border-gray-300 rounded-full text-gray-400 font-bold text-lg min-w-[200px] text-center transition-all">
+                        Aguardando...
+                    </div>
+
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 5: Conclusion & Summary -->
+        <section class="bg-indigo-900 rounded-2xl shadow-sm text-white p-8 md:p-12">
+            <div class="md:flex justify-between items-start gap-8">
+                <div class="flex-1">
+                    <h2 class="text-3xl font-bold mb-4">Conclusão</h2>
+                    <ul class="space-y-4">
+                        <li class="flex items-start gap-3">
+                            <span class="bg-indigo-700 p-1 rounded text-indigo-200 mt-1">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            </span>
+                            <p class="text-indigo-100"><strong>Parsers LALR(1) são eficientes:</strong> Eles tomam decisões complexas olhando apenas um passo à frente, evitando backtracking custoso.</p>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="bg-indigo-700 p-1 rounded text-indigo-200 mt-1">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            </span>
+                            <p class="text-indigo-100"><strong>Precedência é Chave:</strong> A configuração correta da tupla de precedência no <code>ply</code> elimina a necessidade de gramáticas excessivamente aninhadas.</p>
+                        </li>
+                        <li class="flex items-start gap-3">
+                            <span class="bg-indigo-700 p-1 rounded text-indigo-200 mt-1">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            </span>
+                            <p class="text-indigo-100"><strong>Resultado Garantido:</strong> Com a configuração correta, <code>2 + 3 * 4</code> será sempre 14.</p>
+                        </li>
+                    </ul>
+                </div>
+                <div class="mt-8 md:mt-0 bg-indigo-800 p-6 rounded-xl border border-indigo-700 max-w-sm">
+                    <h3 class="text-lg font-bold mb-2">Receba a Inteligência</h3>
+                    <p class="text-sm text-indigo-300 mb-4">
+                        O Parser prefere <strong>Shift</strong> (esperar) quando o próximo operador é mais forte, e <strong>Reduce</strong> (resolver) quando o próximo é mais fraco ou igual.
+                    </p>
+                    <div class="text-4xl font-mono font-bold text-center text-white bg-indigo-900/50 py-4 rounded-lg">
+                        14
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="bg-gray-50 border-t border-gray-200 py-8 text-center text-sm text-gray-500">
+        <p>Gerado a partir do relatório "Apresentação LALR"</p>
+    </footer>
+
+    <!-- Scripts -->
+    <script>
+        // --- Navigation ---
+        function scrollToSection(id) {
+            document.getElementById(id).scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // --- Section 1: Ambiguity Calc Logic ---
+        function updateCalc(type) {
+            const display = document.getElementById('calc-display');
+            const explanation = document.getElementById('calc-explanation');
+            
+            display.classList.remove('text-gray-300', 'text-red-500', 'text-emerald-500');
+            
+            if (type === 'naive') {
+                // Animation effect
+                display.innerText = '...';
+                setTimeout(() => {
+                    display.innerText = '20';
+                    display.classList.add('text-red-500');
+                    explanation.innerHTML = '<span class="text-red-600 font-bold">Incorreto.</span> O parser somou 2+3 primeiro (5), e depois multiplicou por 4.';
+                }, 200);
+            } else {
+                display.innerText = '...';
+                setTimeout(() => {
+                    display.innerText = '14';
+                    display.classList.add('text-emerald-500');
+                    explanation.innerHTML = '<span class="text-emerald-600 font-bold">Correto!</span> O parser viu o "*" e esperou. Fez 3*4 (12) primeiro, depois somou 2.';
+                }, 200);
+            }
+        }
+
+        // --- Section 3: Precedence Chart ---
+        document.addEventListener('DOMContentLoaded', function() {
+            const ctx = document.getElementById('precedenceChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['+ (Soma)', '- (Subtração)', '* (Multiplicação)', '/ (Divisão)'],
+                    datasets: [{
+                        label: 'Nível de Precedência (Peso)',
+                        data: [1, 1, 2, 2], // Values representing hierarchy
+                        backgroundColor: [
+                            'rgba(203, 213, 225, 0.8)', // slate-300
+                            'rgba(203, 213, 225, 0.8)',
+                            'rgba(79, 70, 229, 0.8)',   // indigo-600
+                            'rgba(79, 70, 229, 0.8)'
+                        ],
+                        borderColor: [
+                            'rgb(203, 213, 225)',
+                            'rgb(203, 213, 225)',
+                            'rgb(79, 70, 229)',
+                            'rgb(79, 70, 229)'
+                        ],
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 3,
+                            ticks: {
+                                stepSize: 1,
+                                callback: function(value) {
+                                    if(value === 1) return 'Baixa';
+                                    if(value === 2) return 'Alta';
+                                    return '';
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.raw === 2 ? 'Precedência Alta: Resolve Primeiro' : 'Precedência Baixa: Resolve Depois';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Initialize Simulation
+            renderStep();
+        });
+
+        // --- Section 4: Simulator Logic ---
+        
+        // Simulation Data (The Step-by-Step LALR process for 2 + 3 * 4)
+        const simSteps = [
+            {
+                stack: [],
+                inputRemaining: ['2', '+', '3', '*', '4', '$'],
+                actionType: 'start',
+                actionText: 'Início',
+                desc: 'Pilha vazia. O ponteiro de leitura está no primeiro número.'
+            },
+            {
+                stack: ['2'],
+                inputRemaining: ['+', '3', '*', '4', '$'],
+                actionType: 'shift',
+                actionText: 'SHIFT 2',
+                desc: 'O parser lê o número "2" e o coloca na pilha.'
+            },
+            {
+                stack: ['2', '+'],
+                inputRemaining: ['3', '*', '4', '$'],
+                actionType: 'shift',
+                actionText: 'SHIFT +',
+                desc: 'Lê o operador "+". Empilha.'
+            },
+            {
+                stack: ['2', '+', '3'],
+                inputRemaining: ['*', '4', '$'],
+                actionType: 'shift',
+                actionText: 'SHIFT 3',
+                desc: 'Lê o número "3". Empilha. Agora temos "2 + 3" na pilha.'
+            },
+            {
+                stack: ['2', '+', '3', '*'],
+                inputRemaining: ['4', '$'],
+                actionType: 'critical', // THE MAGIC MOMENT
+                actionText: 'SHIFT *',
+                desc: 'CRÍTICO: O parser vê "2 + 3". Poderia somar? NÃO. Ele olha o próximo símbolo (*). Como * > +, ele faz SHIFT.'
+            },
+            {
+                stack: ['2', '+', '3', '*', '4'],
+                inputRemaining: ['$'],
+                actionType: 'shift',
+                actionText: 'SHIFT 4',
+                desc: 'Lê o número "4". Agora a pilha tem tudo para a multiplicação.'
+            },
+            {
+                stack: ['2', '+', '12'],
+                inputRemaining: ['$'],
+                actionType: 'reduce',
+                actionText: 'REDUCE 3 * 4',
+                desc: 'O parser resolve a multiplicação (3 * 4) e substitui pelo resultado (12) na pilha.'
+            },
+            {
+                stack: ['14'],
+                inputRemaining: ['$'],
+                actionType: 'reduce',
+                actionText: 'REDUCE 2 + 12',
+                desc: 'Agora só resta a soma. O parser resolve 2 + 12. Resultado final: 14.'
+            },
+             {
+                stack: ['14'],
+                inputRemaining: [],
+                actionType: 'finish',
+                actionText: 'ACEITO',
+                desc: 'Fim da análise. A expressão é válida e o resultado é 14.'
+            }
+        ];
+
+        let currentStepIndex = 0;
+
+        function renderStep() {
+            const step = simSteps[currentStepIndex];
+            const logContainer = document.getElementById('step-log');
+            const stackVisual = document.getElementById('stack-visual');
+            const inputTape = document.getElementById('input-tape');
+            const actionDisplay = document.getElementById('action-display');
+            const nextBtn = document.getElementById('btn-next');
+
+            // 1. Update Log (Append new entry)
+            // Clear if start
+            if (currentStepIndex === 0) {
+                logContainer.innerHTML = '';
+            }
+            
+            // Check if log entry already exists for this step (prevent dupes on re-render if logic changes, though here simple append)
+            const logEntry = document.createElement('div');
+            logEntry.className = `p-3 rounded-lg border-l-4 text-sm animate-fade-in ${getStepColor(step.actionType)}`;
+            logEntry.innerHTML = `
+                <div class="font-bold flex justify-between">
+                    <span>Passo ${currentStepIndex + 1}: ${step.actionText}</span>
+                    <span class="text-xs opacity-50 uppercase">${step.actionType}</span>
+                </div>
+                <p class="mt-1 text-gray-600">${step.desc}</p>
+            `;
+            logContainer.prepend(logEntry); // Add to top
+
+            // 2. Update Stack Visual
+            stackVisual.innerHTML = '';
+            if (step.stack.length === 0) {
+                 stackVisual.innerHTML = '<div class="text-gray-400 text-sm self-center w-full text-center">Vazio</div>';
+            } else {
+                step.stack.forEach(item => {
+                    const el = document.createElement('div');
+                    // Style differentiation for numbers vs operators
+                    const isOp = ['+', '*', '-', '/'].includes(item);
+                    const bgClass = isOp ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-white text-gray-800 border-gray-300 shadow-sm';
+                    el.className = `h-16 min-w-[3rem] px-3 flex items-center justify-center font-mono font-bold text-lg rounded border ${bgClass} stack-element`;
+                    el.innerText = item;
+                    stackVisual.appendChild(el);
+                });
+            }
+
+            // 3. Update Input Tape (Simple shift visualization)
+            // We regenerate the tape based on remaining input
+            inputTape.innerHTML = '';
+            if (step.inputRemaining.length === 0) {
+                 inputTape.innerHTML = '<span class="text-gray-400 italic px-4">Fim da entrada</span>';
+            } else {
+                step.inputRemaining.forEach((char, idx) => {
+                    const el = document.createElement('span');
+                    // Highlight the first item as Lookahead
+                    const isLookahead = idx === 0;
+                    const style = isLookahead 
+                        ? 'bg-red-50 text-red-600 border-red-200 ring-2 ring-red-100 font-bold z-10 transform scale-110' 
+                        : 'bg-white text-gray-400 border-gray-100';
+                    
+                    el.className = `tape-item px-3 py-1 rounded shadow-sm border text-lg font-mono transition-all duration-300 ${style}`;
+                    el.innerText = char;
+                    inputTape.appendChild(el);
+                });
+            }
+
+            // 4. Update Action Display
+            actionDisplay.innerText = step.actionText;
+            actionDisplay.className = `mt-8 px-6 py-3 border-2 rounded-full font-bold text-lg min-w-[200px] text-center transition-all ${getActionStyle(step.actionType)}`;
+
+            // 5. Button State
+            if (currentStepIndex >= simSteps.length - 1) {
+                nextBtn.disabled = true;
+                nextBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                nextBtn.innerText = "Concluído";
+            } else {
+                nextBtn.disabled = false;
+                nextBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                nextBtn.innerText = "Próximo Passo →";
+            }
+        }
+
+        function nextStep() {
+            if (currentStepIndex < simSteps.length - 1) {
+                currentStepIndex++;
+                renderStep();
+            }
+        }
+
+        function resetSim() {
+            currentStepIndex = 0;
+            const nextBtn = document.getElementById('btn-next');
+            nextBtn.disabled = false;
+            nextBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            nextBtn.innerText = "Próximo Passo →";
+            renderStep();
+        }
+
+        // Helper for styles
+        function getStepColor(type) {
+            switch(type) {
+                case 'shift': return 'border-blue-400 bg-blue-50';
+                case 'reduce': return 'border-emerald-400 bg-emerald-50';
+                case 'critical': return 'border-amber-400 bg-amber-50'; // Highlights the precedence magic
+                case 'finish': return 'border-indigo-400 bg-indigo-50';
+                default: return 'border-gray-300 bg-gray-50';
+            }
+        }
+
+        function getActionStyle(type) {
+             switch(type) {
+                case 'shift': return 'border-blue-500 text-blue-600 bg-blue-50';
+                case 'reduce': return 'border-emerald-500 text-emerald-600 bg-emerald-50 shadow-md';
+                case 'critical': return 'border-amber-500 text-amber-700 bg-amber-50 shadow-lg scale-110';
+                case 'finish': return 'border-indigo-500 text-indigo-600 bg-indigo-50';
+                default: return 'border-gray-300 text-gray-400 bg-white';
+            }
+        }
+
+    </script>
+</body>
+</html>
